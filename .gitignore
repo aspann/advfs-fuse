@@ -1,0 +1,22 @@
+*.o
+advfs-fuse
+*.d
+.cache/
+build/
+# Raw vdisk images -- track only .zst archives
+resources/disks/**/*.vdisk
+.vscode/
+tests/test_volume
+tests/test_domain
+tests/test_fileset
+tests/test_dir
+tests/test_extents
+tests/test_edge_cases
+tests/test_stripe
+tests/test_filedata
+tests/test_clone
+tests/debug_symlink
+advfs-tool
+STATUS.md
+CONVENTIONS.md
+session-warmup.md
