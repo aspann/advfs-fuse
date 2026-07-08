@@ -47,8 +47,11 @@
 #include <errno.h>
 #include <string.h>
 
-/* Maximum chain hops to prevent infinite loops on corrupt metadata. */
-#define MAX_CHAIN_HOPS  64
+/* Maximum chain hops to prevent infinite loops on corrupt metadata.
+ * Each hop yields ~4-8 extent descriptors. With ADVFS_MAX_EXTENTS at
+ * 4096, 512 hops cover worst-case fragmentation while still catching
+ * genuine corruption loops. */
+#define MAX_CHAIN_HOPS  512
 
 /* Maximum stripe columns we track (>= any sane stripe width). */
 #define MAX_STRIPE_COLS  16

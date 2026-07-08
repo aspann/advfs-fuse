@@ -20,8 +20,9 @@
 #include <errno.h>
 #include <string.h>
 
-/* Maximum tag directory pages we will scan. */
-#define MAX_TAG_DIR_PAGES  256
+/* Maximum tag directory pages we will scan.
+ * Matches ADVFS_MAX_EXTENTS increase for heavily fragmented volumes. */
+#define MAX_TAG_DIR_PAGES  4096
 
 /* Try to extract fileset info from an mcell's BSR_BFS_ATTR record. */
 static int try_fileset_from_mcell(adv_mcell_t *mc, advfs_fileset_info_t *info)

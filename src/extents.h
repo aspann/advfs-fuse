@@ -16,8 +16,11 @@
 #include "volume.h"
 #include "domain.h"
 
-/* Maximum extents we collect from a single mcell chain. */
-#define ADVFS_MAX_EXTENTS  256
+/* Maximum extents we collect from a single mcell chain.
+ * Heavily fragmented volumes can exceed 256 extents.
+ * 4096 entries = ~48 KB per stack array, well within
+ * the default 8 MB Linux thread stack. */
+#define ADVFS_MAX_EXTENTS  4096
 
 /* One resolved extent descriptor: bitfile page -> disk block.
  * vd_index selects the domain volume holding the blocks (1-based);
