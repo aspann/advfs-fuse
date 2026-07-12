@@ -145,11 +145,12 @@ fail_test() {
 
 printf 'Building tests...\n'
 
-# test_volume: volume + util only; no ADVFS_DEBUG needed.
+# test_volume: needs domain for open_at tests (domain pulls in fileset)
+# and filedata for the composite-offset recursive count.
+# shellcheck disable=SC2086
 do_build test_volume "$TESTS_DIR/test_volume" \
-    "$TESTS_DIR/test_volume.c" \
-    "$ROOT/src/volume.c" \
-    "$ROOT/src/util.c" || true
+    "$TESTS_DIR/test_volume.c" $COMMON_SRCS \
+    "$ROOT/src/filedata.c" || true
 
 # test_domain: all common sources with ADVFS_DEBUG.
 # $COMMON_SRCS is intentionally unquoted for word splitting.
@@ -202,6 +203,13 @@ do_build test_clone "$TESTS_DIR/test_clone" \
     "$TESTS_DIR/test_clone.c" $COMMON_SRCS \
     "$ROOT/src/filedata.c" || true
 
+# test_advfs_tool: recursive count (advfs-tool -r feature).
+# shellcheck disable=SC2086
+do_build test_advfs_tool "$TESTS_DIR/test_advfs_tool" \
+    -DADVFS_DEBUG \
+    "$TESTS_DIR/test_advfs_tool.c" $COMMON_SRCS \
+    "$ROOT/src/filedata.c" || true
+
 if [ "$build_errors" -gt 0 ]; then
     printf '\n%d build(s) failed -- aborting.\n' "$build_errors"
     exit 1
@@ -220,12 +228,22 @@ printf '\nRunning tests...\n'
 if [ "$HAVE_VDISK" -eq 1 ]; then
 
 # --- test_volume ---
-# Expected output: "AdvFS detected: <path>" and "ODS version: 3 ..."
+# Expected output: "AdvFS detected: <path>", "ODS version: 3 ..." and
+# the composite-offset end-to-end check.
+# The composite fixture is 1 MiB of zeros followed by the vdisk; the
+# volume layer must find the same domain and the same recursive entry
+# counts at offset 1 MiB as at offset 0.
+COMPOSITE="$OUTDIR/composite_1m.vdisk"
+dd if=/dev/zero of="$COMPOSITE" bs=1048576 count=1 2>/dev/null
+cat "$VDISK" >>"$COMPOSITE"
 outfile="$OUTDIR/test_volume.out"
-if "$TESTS_DIR/test_volume" "$VDISK" >"$outfile" 2>&1; then
+if "$TESTS_DIR/test_volume" "$VDISK" "$COMPOSITE" 1048576 \
+        >"$outfile" 2>&1; then
     ok=1
     grep -q "AdvFS detected" "$outfile" || ok=0
     grep -q "ODS version: 3"  "$outfile" || ok=0
+    grep -q "\[PASS\] composite offset" "$outfile" || ok=0
+    grep -q "\[FAIL\]" "$outfile" && ok=0
     if [ "$ok" -eq 1 ]; then
         pages=$(grep "pages)" "$outfile" \
             | sed 's/.*(\([0-9]*\) pages).*/\1/' | head -1)
@@ -401,6 +419,31 @@ fi
 fi # HAVE_CLONE_VDISK
 
 # ---------------------------------------------------------------------------
+# advfs-tool tests (recursive count).
+# Uses the V3 single-volume image.
+# ---------------------------------------------------------------------------
+if [ "$HAVE_VDISK" -eq 1 ]; then
+
+outfile="$OUTDIR/test_advfs_tool.out"
+if "$TESTS_DIR/test_advfs_tool" "$VDISK" >"$outfile" 2>&1; then
+    ok=1
+    grep -q "\[PASS\]" "$outfile" || ok=0
+    grep -q "\[FAIL\]" "$outfile" && ok=0
+    # The bad-checksum fixture must have fired the parser warning.
+    grep -q "checksum mismatch" "$outfile" || ok=0
+    if [ "$ok" -eq 1 ]; then
+        npass=$(grep -c "\[PASS\]" "$outfile")
+        pass_test "test_advfs_tool" "${npass} advfs-tool checks passed"
+    else
+        fail_test "test_advfs_tool" "output validation failed" "$outfile"
+    fi
+else
+    fail_test "test_advfs_tool" "non-zero exit" "$outfile"
+fi
+
+fi # HAVE_VDISK
+
+# ---------------------------------------------------------------------------
 # ODS v4 (RBMT) vdisk-based tests. Same binaries, run against the v4
 # images. Skipped when the v4 image is absent.
 # ---------------------------------------------------------------------------
@@ -553,6 +596,25 @@ if "$TESTS_DIR/test_filedata" "$V4_VDISK" >"$outfile" 2>&1; then
     fi
 else
     fail_test "test_filedata_v4" "non-zero exit" "$outfile"
+fi
+
+# --- test_advfs_tool (v4) ---
+# Recursive count against the V4 image (same known file structure as
+# the V3 image: 6 files, 2 dirs), plus the disklabel fixture tests.
+outfile="$OUTDIR/test_advfs_tool_v4.out"
+if "$TESTS_DIR/test_advfs_tool" "$V4_VDISK" >"$outfile" 2>&1; then
+    ok=1
+    grep -q "\[PASS\]" "$outfile" || ok=0
+    grep -q "\[FAIL\]" "$outfile" && ok=0
+    grep -q "checksum mismatch" "$outfile" || ok=0
+    if [ "$ok" -eq 1 ]; then
+        npass=$(grep -c "\[PASS\]" "$outfile")
+        pass_test "test_advfs_tool_v4" "${npass} advfs-tool checks passed (V4)"
+    else
+        fail_test "test_advfs_tool_v4" "output validation failed" "$outfile"
+    fi
+else
+    fail_test "test_advfs_tool_v4" "non-zero exit" "$outfile"
 fi
 
 fi # HAVE_V4_VDISK

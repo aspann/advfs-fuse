@@ -10,6 +10,7 @@
  *   advfs-tool --info <vdisk>            metadata summary
  *   advfs-tool --scan-deleted <vdisk>    undelete scanner
  *   advfs-tool --list <vdisk> [path]     directory listing (ls -la style)
+ *   advfs-tool --list -r <vdisk> [path]  recursive file count
  *
  * Copyright (C) 2026 Armas Spann
  * SPDX-License-Identifier: GPL-2.0-only
@@ -34,7 +35,7 @@
 #include "util.h"
 #include "volume.h"
 
-#define ADVFS_TOOL_VERSION  "1.0.0"
+#define ADVFS_TOOL_VERSION  "1.0.2"
 
 /* Maximum file name length in a directory entry (mirrors dir.c). */
 #define TOOL_MAX_NAME  255
@@ -321,20 +322,35 @@ static int is_regular_file(const char *path)
 
 /*
  * Open one or more volumes and discover the domain.
- * vols[] must have capacity for at least nvdisks entries (use
- * ADVFS_MAX_DOM_VDS).  On failure, any volumes that were opened are
- * closed and set to NULL.
+ * vols[] must have capacity for ADVFS_MAX_DOM_VDS entries; an
+ * nvdisks outside 1..ADVFS_MAX_DOM_VDS is rejected here so every
+ * caller is guarded at once.  offset/size apply to the first (primary)
+ * volume only, for partition support (size 0 = to EOF).  On failure,
+ * any volumes that were opened are closed and set to NULL.
  * Returns 0 on success, -errno on failure.
  */
 static int open_multi_domain(char **vdisk_paths, int nvdisks,
+                             uint64_t offset, uint64_t size,
                              advfs_volume_t **vols, advfs_domain_t *domain)
 {
+    if (nvdisks < 1) {
+        fprintf(stderr, "advfs-tool: no vdisk paths given\n");
+        return -EINVAL;
+    }
+    if (nvdisks > ADVFS_MAX_DOM_VDS) {
+        fprintf(stderr, "advfs-tool: too many vdisk paths (%d, max %d)\n",
+                nvdisks, ADVFS_MAX_DOM_VDS);
+        return -EINVAL;
+    }
+
     for (int i = 0; i < nvdisks; i++) {
         vols[i] = NULL;
     }
 
     for (int i = 0; i < nvdisks; i++) {
-        int err = advfs_volume_open(vdisk_paths[i], &vols[i]);
+        uint64_t off = (i == 0) ? offset : 0;
+        uint64_t sz = (i == 0) ? size : 0;
+        int err = advfs_volume_open_at(vdisk_paths[i], off, sz, &vols[i]);
         if (err) {
             fprintf(stderr, "advfs-tool: cannot open '%s': %s\n",
                     vdisk_paths[i], strerror(-err));
@@ -398,12 +414,15 @@ static int count_deleted_cb(const char *name, adv_bf_tag_t tag,
     return 0;
 }
 
-static int cmd_info(char **vdisks, int nvdisks)
+/* --info: print domain metadata and fileset summary. */
+static int cmd_info(char **vdisks, int nvdisks, uint64_t offset,
+                    uint64_t size)
 {
     advfs_volume_t *vols[ADVFS_MAX_DOM_VDS];
     advfs_domain_t domain;
 
-    int err = open_multi_domain(vdisks, nvdisks, vols, &domain);
+    int err = open_multi_domain(vdisks, nvdisks, offset, size, vols,
+                                &domain);
     if (err) {
         return 1;
     }
@@ -616,13 +635,15 @@ static void scan_dir_deleted(scan_stats_t *st, adv_bf_tag_t dir_tag,
     dirent_list_free(&list);
 }
 
-static int cmd_scan_deleted(char **vdisks, int nvdisks,
-                            const char *fileset_name)
+/* --scan-deleted: scan filesets recursively for deleted entries. */
+static int cmd_scan_deleted(char **vdisks, int nvdisks, uint64_t offset,
+                            uint64_t size, const char *fileset_name)
 {
     advfs_volume_t *vols[ADVFS_MAX_DOM_VDS];
     advfs_domain_t domain;
 
-    int err = open_multi_domain(vdisks, nvdisks, vols, &domain);
+    int err = open_multi_domain(vdisks, nvdisks, offset, size, vols,
+                                &domain);
     if (err) {
         return 1;
     }
@@ -826,13 +847,16 @@ static int lookup_entry(fs_ctx_t *fs, adv_bf_tag_t dir_tag,
     return err;
 }
 
-static int cmd_list(char **vdisks, int nvdisks, const char *path,
+/* --list: list one directory (or a single file) ls -la style. */
+static int cmd_list(char **vdisks, int nvdisks, uint64_t offset,
+                    uint64_t size, const char *path,
                     const char *fileset_name)
 {
     advfs_volume_t *vols[ADVFS_MAX_DOM_VDS];
     advfs_domain_t domain;
 
-    int err = open_multi_domain(vdisks, nvdisks, vols, &domain);
+    int err = open_multi_domain(vdisks, nvdisks, offset, size, vols,
+                                &domain);
     if (err) {
         return 1;
     }
@@ -978,6 +1002,273 @@ static int cmd_list(char **vdisks, int nvdisks, const char *path,
 }
 
 /* ================================================================
+ * Recursive file count (-r / --recursive with --list)
+ * ================================================================ */
+
+typedef struct {
+    uint64_t files;
+    uint64_t dirs;
+    uint64_t symlinks;
+    uint64_t other;
+    uint64_t errors;
+    uint64_t total_size;
+} rcount_t;
+
+/* Growable set of visited directory tag numbers (cycle guard). */
+typedef struct {
+    uint32_t *tags;
+    size_t    count;
+    size_t    cap;
+} visited_set_t;
+
+/* Release the visited set's storage. */
+static void visited_free(visited_set_t *set)
+{
+    free(set->tags);
+    set->tags = NULL;
+    set->count = set->cap = 0;
+}
+
+/* Return 1 when tag_num is already in the set, 0 otherwise. */
+static int visited_contains(const visited_set_t *set, uint32_t tag_num)
+{
+    for (size_t i = 0; i < set->count; i++) {
+        if (set->tags[i] == tag_num) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Add tag_num to the set; returns 0 on success, -ENOMEM on OOM. */
+static int visited_add(visited_set_t *set, uint32_t tag_num)
+{
+    if (set->count == set->cap) {
+        size_t new_cap = set->cap ? set->cap * 2 : 64;
+        uint32_t *p = realloc(set->tags, new_cap * sizeof(*p));
+        if (!p) {
+            return -ENOMEM;
+        }
+        set->tags = p;
+        set->cap = new_cap;
+    }
+    set->tags[set->count++] = tag_num;
+    return 0;
+}
+
+/* Recursively count files, dirs, symlinks in a directory tree. */
+static void count_recursive(fs_ctx_t *fs, adv_bf_tag_t dir_tag,
+                            const char *path, int depth, rcount_t *cnt,
+                            visited_set_t *visited)
+{
+    if (depth > TOOL_MAX_DEPTH) {
+        fprintf(stderr, "advfs-tool: max depth exceeded at '%s/'\n", path);
+        cnt->errors++;
+        return;
+    }
+
+    /* Cycle guard: a directory tag revisited via a corrupt or looped
+     * directory structure is counted as an error, not descended. */
+    if (visited_contains(visited, dir_tag.num)) {
+        fprintf(stderr, "advfs-tool: directory cycle detected at '%s/' "
+                "(tag %u already visited)\n", path, dir_tag.num);
+        cnt->errors++;
+        return;
+    }
+    if (visited_add(visited, dir_tag.num) != 0) {
+        fprintf(stderr, "advfs-tool: out of memory tracking visited "
+                "directories at '%s/'\n", path);
+        cnt->errors++;
+        return;
+    }
+
+    dirent_list_t list;
+    int err = read_dir_entries(fs, dir_tag, 0, &list);
+    if (err) {
+        cnt->errors++;
+        return;
+    }
+
+    for (size_t i = 0; i < list.count; i++) {
+        const dirent_rec_t *e = &list.items[i];
+        if (strcmp(e->name, ".") == 0 || strcmp(e->name, "..") == 0)
+            continue;
+
+        adv_fs_stat_t fstat;
+        err = stat_tag_checked(fs, e->tag, 0, &fstat);
+        if (err) {
+            cnt->errors++;
+            continue;
+        }
+
+        uint32_t ftype = fstat.st_mode & TOOL_S_IFMT;
+
+        if (ftype == TOOL_S_IFDIR) {
+            cnt->dirs++;
+            char sub[TOOL_MAX_PATH];
+            int n = snprintf(sub, sizeof(sub), "%s/%s", path, e->name);
+            if (n >= 0 && (size_t)n < sizeof(sub)) {
+                count_recursive(fs, e->tag, sub, depth + 1, cnt, visited);
+            } else {
+                fprintf(stderr, "advfs-tool: path too long under '%s/', "
+                        "subtree '%s' skipped\n", path, e->name);
+                cnt->errors++;
+            }
+        } else if (ftype == TOOL_S_IFREG) {
+            cnt->files++;
+            cnt->total_size += fstat.st_size;
+        } else if (ftype == TOOL_S_IFLNK) {
+            cnt->symlinks++;
+        } else {
+            cnt->other++;
+        }
+    }
+
+    dirent_list_free(&list);
+}
+
+/* --list -r: open domain, resolve path, count all entries recursively. */
+static int cmd_list_recursive(char **vdisks, int nvdisks, uint64_t offset,
+                              uint64_t size, const char *path,
+                              const char *fileset_name)
+{
+    advfs_volume_t *vols[ADVFS_MAX_DOM_VDS];
+    advfs_domain_t domain;
+
+    int err = open_multi_domain(vdisks, nvdisks, offset, size, vols,
+                                &domain);
+    if (err) {
+        return 1;
+    }
+
+    advfs_volume_t *vol = vols[0];
+
+    fileset_list_t filesets;
+    memset(&filesets, 0, sizeof(filesets));
+
+    err = advfs_fileset_list(vol, &domain, collect_fileset_cb, &filesets);
+    if (err || filesets.count == 0) {
+        fprintf(stderr, "advfs-tool: no filesets found on '%s'\n", vdisks[0]);
+        advfs_domain_close(&domain);
+        close_volumes(vols, nvdisks);
+        return 1;
+    }
+
+    const advfs_fileset_info_t *chosen = NULL;
+
+    if (fileset_name != NULL) {
+        for (int i = 0; i < filesets.count; i++) {
+            if (strcmp(filesets.sets[i].name, fileset_name) == 0) {
+                chosen = &filesets.sets[i];
+                break;
+            }
+        }
+        if (!chosen) {
+            fprintf(stderr, "advfs-tool: fileset '%s' not found\n",
+                    fileset_name);
+            advfs_domain_close(&domain);
+            close_volumes(vols, nvdisks);
+            return 1;
+        }
+    } else {
+        chosen = &filesets.sets[0];
+        for (int i = 0; i < filesets.count; i++) {
+            if (filesets.sets[i].clone_id == 0) {
+                chosen = &filesets.sets[i];
+                break;
+            }
+        }
+    }
+
+    fs_ctx_t fs;
+    err = fs_ctx_open(&fs, vol, &domain, chosen);
+    if (err) {
+        fprintf(stderr, "advfs-tool: cannot resolve tag directory of "
+                "fileset '%s': %s\n", chosen->name, strerror(-err));
+        advfs_domain_close(&domain);
+        close_volumes(vols, nvdisks);
+        return 1;
+    }
+
+    /* Resolve path to directory tag */
+    adv_bf_tag_t cur_tag = { .num = TOOL_ROOT_TAG, .seq = 0 };
+    int is_dir = 1;
+
+    char path_buf[TOOL_MAX_PATH];
+    int n = snprintf(path_buf, sizeof(path_buf), "%s", path);
+    if (n < 0 || (size_t)n >= sizeof(path_buf)) {
+        fprintf(stderr, "advfs-tool: path too long\n");
+        advfs_domain_close(&domain);
+        close_volumes(vols, nvdisks);
+        return 1;
+    }
+
+    char *save = NULL;
+    for (char *comp = strtok_r(path_buf, "/", &save); comp;
+         comp = strtok_r(NULL, "/", &save)) {
+        if (strcmp(comp, ".") == 0)
+            continue;
+        if (!is_dir) {
+            fprintf(stderr, "advfs-tool: not a directory in path\n");
+            advfs_domain_close(&domain);
+            close_volumes(vols, nvdisks);
+            return 1;
+        }
+
+        adv_bf_tag_t next_tag;
+        err = lookup_entry(&fs, cur_tag, comp, &next_tag);
+        if (err) {
+            fprintf(stderr, "advfs-tool: '%s' not found: %s\n",
+                    comp, strerror(-err));
+            advfs_domain_close(&domain);
+            close_volumes(vols, nvdisks);
+            return 1;
+        }
+
+        adv_fs_stat_t fstat;
+        err = stat_tag_checked(&fs, next_tag, 0, &fstat);
+        is_dir = (err == 0) ? TOOL_ISDIR(fstat.st_mode) : 0;
+        cur_tag = next_tag;
+    }
+
+    if (!is_dir) {
+        fprintf(stderr, "advfs-tool: '%s' is not a directory\n", path);
+        advfs_domain_close(&domain);
+        close_volumes(vols, nvdisks);
+        return 1;
+    }
+
+    rcount_t cnt;
+    memset(&cnt, 0, sizeof(cnt));
+
+    visited_set_t visited;
+    memset(&visited, 0, sizeof(visited));
+
+    fprintf(stderr, "advfs-tool: counting '%s' in fileset '%s'...\n",
+            path, fs.fs_name);
+
+    count_recursive(&fs, cur_tag, path, 0, &cnt, &visited);
+    visited_free(&visited);
+
+    char size_buf[32];
+    fmt_human_size(cnt.total_size, size_buf, sizeof(size_buf));
+
+    printf("Fileset '%s', path '%s' (recursive):\n", fs.fs_name, path);
+    printf("  Files:      %llu (%s)\n", (unsigned long long)cnt.files,
+           size_buf);
+    printf("  Dirs:       %llu\n", (unsigned long long)cnt.dirs);
+    printf("  Symlinks:   %llu\n", (unsigned long long)cnt.symlinks);
+    printf("  Other:      %llu\n", (unsigned long long)cnt.other);
+    printf("  Errors:     %llu\n", (unsigned long long)cnt.errors);
+    printf("  Total:      %llu\n", (unsigned long long)(cnt.files +
+           cnt.dirs + cnt.symlinks + cnt.other));
+
+    advfs_domain_close(&domain);
+    close_volumes(vols, nvdisks);
+    return 0;
+}
+
+/* ================================================================
  * CLI entry point
  * ================================================================ */
 
@@ -1008,6 +1299,12 @@ static void usage(FILE *out, const char *prog)
         "  --fileset <name>          Select a specific fileset by name\n"
         "                            for --list and --scan-deleted.\n"
         "                            Clone filesets are allowed.\n"
+        "  --partition <letter>      Read the BSD disklabel and use the\n"
+        "                            given partition's offset and size\n"
+        "                            (e.g. 'g' for usr).\n"
+        "  --offset <bytes>          Manual byte offset into the first\n"
+        "                            vdisk file (excludes --partition).\n"
+        "  -r, --recursive           Recursive file count (with --list).\n"
         "  -h, --help                Show this help.\n"
         "  -V, --version             Show version.\n",
         prog);
@@ -1041,22 +1338,97 @@ int main(int argc, char *argv[])
      * confusing the is_regular_file() scan used by --list.
      */
     const char *fileset_name = NULL;
+    const char *partition_letter = NULL;
+    uint64_t volume_offset = 0;
+    uint64_t volume_size = 0;
+    int offset_given = 0;
+    int recursive = 0;
     /* 256 slots: far more than any realistic argc value. */
     char *filtered[256];
     int n_filtered = 0;
 
     for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "-r") == 0 ||
+            strcmp(argv[i], "--recursive") == 0) {
+            recursive = 1;
+            continue;
+        }
         if (strcmp(argv[i], "--fileset") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "advfs-tool: --fileset requires a name\n");
                 return 2;
             }
             fileset_name = argv[i + 1];
-            i++;  /* skip the fileset name */
+            i++;
+            continue;
+        }
+        if (strcmp(argv[i], "--partition") == 0) {
+            if (i + 1 >= argc || strlen(argv[i + 1]) != 1 ||
+                argv[i + 1][0] < 'a' || argv[i + 1][0] > 'p') {
+                fprintf(stderr, "advfs-tool: --partition requires a "
+                        "letter a..p\n");
+                return 2;
+            }
+            /* Disklabel read is deferred until the vdisk path is known. */
+            partition_letter = argv[i + 1];
+            i++;
+            continue;
+        }
+        if (strcmp(argv[i], "--offset") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "advfs-tool: --offset requires a value\n");
+                return 2;
+            }
+            /* Reject negative values explicitly: strtoull() would
+             * silently wrap "-1" to 0xFFFFFFFFFFFFFFFF. Skip leading
+             * whitespace to catch " -1" too. */
+            const char *p = argv[i + 1];
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '-') {
+                fprintf(stderr, "advfs-tool: --offset must not be "
+                        "negative: '%s'\n", argv[i + 1]);
+                return 2;
+            }
+            errno = 0;
+            char *endp = NULL;
+            volume_offset = strtoull(argv[i + 1], &endp, 0);
+            if (errno == ERANGE || endp == argv[i + 1] || *endp != '\0') {
+                fprintf(stderr, "advfs-tool: invalid --offset value "
+                        "'%s'\n", argv[i + 1]);
+                return 2;
+            }
+            offset_given = 1;
+            i++;
             continue;
         }
         if (n_filtered < 256) {
             filtered[n_filtered++] = argv[i];
+        }
+    }
+
+    if (partition_letter != NULL && offset_given) {
+        fprintf(stderr, "advfs-tool: --partition and --offset are "
+                "mutually exclusive\n");
+        return 2;
+    }
+
+    /* Resolve --partition to a byte offset and size via the BSD
+     * disklabel of the first vdisk path. */
+    if (partition_letter != NULL) {
+        if (n_filtered < 1) {
+            fprintf(stderr, "advfs-tool: --partition requires a vdisk "
+                    "argument\n");
+            return 2;
+        }
+        int perr = advfs_volume_read_disklabel(filtered[0],
+                                               partition_letter[0],
+                                               &volume_offset,
+                                               &volume_size);
+        if (perr) {
+            fprintf(stderr, "advfs-tool: cannot read partition '%c' "
+                    "from disklabel: %s\n", partition_letter[0],
+                    strerror(-perr));
+            return 1;
         }
     }
 
@@ -1066,7 +1438,7 @@ int main(int argc, char *argv[])
                     "vdisk argument\n");
             return 2;
         }
-        return cmd_info(filtered, n_filtered);
+        return cmd_info(filtered, n_filtered, volume_offset, volume_size);
     }
 
     if (strcmp(mode, "--scan-deleted") == 0) {
@@ -1075,7 +1447,8 @@ int main(int argc, char *argv[])
                     "one vdisk argument\n");
             return 2;
         }
-        return cmd_scan_deleted(filtered, n_filtered, fileset_name);
+        return cmd_scan_deleted(filtered, n_filtered, volume_offset,
+                                volume_size, fileset_name);
     }
 
     if (strcmp(mode, "--list") == 0) {
@@ -1107,7 +1480,12 @@ int main(int argc, char *argv[])
                     "vdisk file\n");
             return 2;
         }
-        return cmd_list(filtered, nvdisks, list_path, fileset_name);
+        if (recursive) {
+            return cmd_list_recursive(filtered, nvdisks, volume_offset,
+                                      volume_size, list_path, fileset_name);
+        }
+        return cmd_list(filtered, nvdisks, volume_offset, volume_size,
+                        list_path, fileset_name);
     }
 
     fprintf(stderr, "advfs-tool: unknown mode '%s'\n", mode);

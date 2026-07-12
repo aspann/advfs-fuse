@@ -25,6 +25,7 @@ void advfs_log_msg(const char *level, const char *fmt, ...);
 
 #define advfs_err(...)   advfs_log_msg("error", __VA_ARGS__)
 #define advfs_warn(...)  advfs_log_msg("warn",  __VA_ARGS__)
+#define advfs_info(...)  advfs_log_msg("info",  __VA_ARGS__)
 
 #ifdef ADVFS_DEBUG
 #define advfs_dbg(...)   advfs_log_msg("debug", __VA_ARGS__)

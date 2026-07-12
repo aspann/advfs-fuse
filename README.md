@@ -49,23 +49,30 @@ emake DESTDIR="${D}" PREFIX="${EPREFIX}/usr" install
 ### FUSE mount
 
 ```sh
-advfs-fuse <vdisk> <mountpoint>
-advfs-fuse vol1.vdisk vol2.vdisk <mountpoint>   # multi-volume
+advfs-fuse <vdisk> <mountpoint>                       # single volume
+advfs-fuse vol1.vdisk vol2.vdisk <mountpoint>         # multi-volume
 advfs-fuse --fileset clone_snap <vdisk> <mountpoint>  # mount a clone
+advfs-fuse --partition g <vdisk> <mountpoint>         # mount from partition
+advfs-fuse --offset 0x200000 <vdisk> <mountpoint>     # manual offset
 ```
 
 Mounts the first non-clone fileset as a read-only filesystem.
 Multiple vdisk paths for striped/multi-volume domains.
 `--fileset` selects a specific fileset (e.g. a clone snapshot).
+`--partition` reads a BSD/Alpha disklabel and uses the given
+partition's byte offset (e.g. `g` for the usr domain on Tru64).
+`--offset` sets a manual byte offset into the vdisk file.
 Standard FUSE options (`-d`, `-f`, `-s`) are passed through.
 
 ### CLI tool
 
 ```sh
-advfs-tool --info <vdisk> [vdisk2 ...]                  # metadata
-advfs-tool --list <vdisk> [path]                        # ls -la
-advfs-tool --list --fileset clone_snap <vdisk> [path]   # list clone
-advfs-tool --scan-deleted <vdisk>                       # find deleted
+advfs-tool --info <vdisk> [vdisk2 ...]                 # metadata
+advfs-tool --list <vdisk> [path]                       # ls -la
+advfs-tool --list -r <vdisk> [path]                    # recursive count
+advfs-tool --list --fileset clone_snap <vdisk> [path]  # list clone
+advfs-tool --list -r --partition g <vdisk> /           # count in partition
+advfs-tool --scan-deleted <vdisk>                      # find deleted
 ```
 
 `--info` shows ODS version, domain ID, volume geometry, BMT/RBMT
@@ -80,7 +87,7 @@ BMTR_FS_STAT for file size, type, and deletion timestamp.
 
 | Module       | Purpose                                          |
 |--------------|--------------------------------------------------|
-| volume.c     | Raw vdisk I/O, magic detection, ODS version      |
+| volume.c     | Raw vdisk I/O, magic detection, partition offset  |
 | bmt.c        | BMT/RBMT page reading, mcell record walking       |
 | domain.c     | Domain discovery, BMT/RBMT extent map bootstrap   |
 | extents.c    | Extent map resolution (primary + shadow + extra)  |
@@ -89,7 +96,7 @@ BMTR_FS_STAT for file size, type, and deletion timestamp.
 | filedata.c   | File data reading (frags, extents, sparse holes)  |
 | fuse_ops.c   | FUSE callbacks (getattr, readdir, read, readlink) |
 | main.c       | FUSE CLI, volume/domain init, fuse_main           |
-| advfs_tool.c | Standalone CLI (--info, --list, --scan-deleted)   |
+| advfs_tool.c | Standalone CLI (--info, --list [-r], --scan-deleted) |
 | ods.h        | On-disk structure defs (from GPL bs_ods.h)        |
 | util.c       | Logging, page/block math, BMT page resolution     |
 

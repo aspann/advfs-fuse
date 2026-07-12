@@ -84,7 +84,7 @@ static int capture_first_fileset(const advfs_fileset_info_t *info,
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "Usage: %s [--fileset <name>] <vdisk> [vdisk2 ...] "
+            "Usage: %s [options] <vdisk> [vdisk2 ...] "
             "<mountpoint> [FUSE options]\n"
             "\n"
             "Mount a Tru64 AdvFS vdisk image read-only via FUSE.\n"
@@ -93,7 +93,10 @@ static void usage(const char *prog)
             "By default the first non-clone fileset is mounted.\n"
             "\n"
             "Options:\n"
-            "  --fileset <name>   Mount the named fileset (clones allowed).\n"
+            "  --fileset <name>       Mount the named fileset (clones allowed).\n"
+            "  --partition <letter>   Read BSD disklabel and use the given\n"
+            "                         partition's offset (e.g. 'g' for usr).\n"
+            "  --offset <bytes>       Manual byte offset into the vdisk file.\n"
             "\n"
             "Common FUSE options:\n"
             "  -f    stay in the foreground\n"
@@ -120,6 +123,11 @@ int main(int argc, char *argv[])
      * for a vdisk path or a FUSE mountpoint.
      */
     const char *fileset_name = NULL;
+    const char *partition_letter = NULL;
+    uint64_t volume_offset = 0;
+    uint64_t part_size = 0;
+    int offset_given = 0;
+
     char **filt_argv = calloc((size_t)argc, sizeof(char *));
     if (!filt_argv) {
         advfs_err("main: out of memory");
@@ -128,9 +136,53 @@ int main(int argc, char *argv[])
     int filt_argc = 0;
 
     for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "--fileset") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--fileset") == 0) {
+            if (i + 1 >= argc) {
+                advfs_err("main: --fileset requires a name");
+                free(filt_argv);
+                return 2;
+            }
             fileset_name = argv[i + 1];
-            i++;  /* skip the fileset name too */
+            i++;
+            continue;
+        }
+        if (strcmp(argv[i], "--partition") == 0) {
+            if (i + 1 >= argc) {
+                advfs_err("main: --partition requires a letter a..p");
+                free(filt_argv);
+                return 2;
+            }
+            partition_letter = argv[i + 1];
+            i++;
+            continue;
+        }
+        if (strcmp(argv[i], "--offset") == 0) {
+            if (i + 1 >= argc) {
+                advfs_err("main: --offset requires a value");
+                free(filt_argv);
+                return 2;
+            }
+            /* Reject negative values explicitly: strtoull() would
+             * silently wrap "-1" to 0xFFFFFFFFFFFFFFFF. Skip leading
+             * whitespace to catch " -1" too. */
+            const char *p = argv[i + 1];
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '-') {
+                advfs_err("main: --offset must not be negative: '%s'",
+                          argv[i + 1]);
+                free(filt_argv);
+                return 2;
+            }
+            errno = 0;
+            char *endp = NULL;
+            volume_offset = strtoull(argv[i + 1], &endp, 0);
+            if (errno == ERANGE || endp == argv[i + 1] || *endp != '\0') {
+                advfs_err("main: invalid --offset value '%s'", argv[i + 1]);
+                free(filt_argv);
+                return 2;
+            }
+            offset_given = 1;
+            i++;
             continue;
         }
         filt_argv[filt_argc++] = argv[i];
@@ -189,6 +241,31 @@ int main(int argc, char *argv[])
 
     const char *mountpoint = filt_argv[mountpoint_idx];
 
+    /* Resolve --partition to a byte offset via the BSD disklabel. */
+    if (partition_letter != NULL) {
+        if (offset_given) {
+            advfs_err("main: --partition and --offset are mutually exclusive");
+            free(filt_argv);
+            return 2;
+        }
+        if (strlen(partition_letter) != 1 ||
+            partition_letter[0] < 'a' || partition_letter[0] > 'p') {
+            advfs_err("main: --partition requires a single letter a..p");
+            free(filt_argv);
+            return 2;
+        }
+        int perr = advfs_volume_read_disklabel(
+            vdisk_paths[0], partition_letter[0],
+            &volume_offset, &part_size);
+        if (perr) {
+            advfs_err("main: cannot read disklabel partition '%c' "
+                      "from %s (err=%d)",
+                      partition_letter[0], vdisk_paths[0], perr);
+            free(filt_argv);
+            return 1;
+        }
+    }
+
     /* Step 1: open all volumes and discover the domain. */
     advfs_volume_t *vols[ADVFS_MAX_DOM_VDS];
     for (int j = 0; j < nvdisks; j++) {
@@ -196,7 +273,12 @@ int main(int argc, char *argv[])
     }
 
     for (int j = 0; j < nvdisks; j++) {
-        int err = advfs_volume_open(vdisk_paths[j], &vols[j]);
+        /* Apply partition offset/size only to the first (primary)
+         * volume. part_size is 0 (to EOF) unless --partition was
+         * resolved from the disklabel. */
+        uint64_t off = (j == 0) ? volume_offset : 0;
+        uint64_t sz = (j == 0) ? part_size : 0;
+        int err = advfs_volume_open_at(vdisk_paths[j], off, sz, &vols[j]);
         if (err) {
             advfs_err("main: cannot open volume '%s' (err=%d)",
                       vdisk_paths[j], err);

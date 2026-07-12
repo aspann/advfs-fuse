@@ -20,6 +20,24 @@ typedef struct advfs_volume advfs_volume_t;
 /* Open a vdisk file and verify AdvFS magic. Returns 0 on success, -errno on failure. */
 int advfs_volume_open(const char *path, advfs_volume_t **vol_out);
 
+/*
+ * Open a vdisk file at a byte offset into the file.
+ * Used when the vdisk is a partition inside a larger disk image.
+ * The offset is applied to all subsequent reads transparently.
+ * size limits the usable bytes to the partition size (0 = to EOF);
+ * the effective size is min(file_size - offset, size).
+ */
+int advfs_volume_open_at(const char *path, uint64_t offset, uint64_t size,
+                         advfs_volume_t **vol_out);
+
+/*
+ * Read the BSD/Tru64 disklabel from a raw disk image and return the
+ * byte offset and size of the given partition letter ('a'..'p').
+ * Returns 0 on success, -errno on failure.
+ */
+int advfs_volume_read_disklabel(const char *path, char letter,
+                                uint64_t *offset_out, uint64_t *size_out);
+
 /* Close a volume and free its context. */
 void advfs_volume_close(advfs_volume_t *vol);
 

@@ -15,6 +15,7 @@ tests/test_edge_cases
 tests/test_stripe
 tests/test_filedata
 tests/test_clone
+tests/test_advfs_tool
 tests/debug_symlink
 advfs-tool
 STATUS.md

@@ -57,6 +57,17 @@ Volume
         +-- frag_type: 1-7 KB; frag_slot: index in frag file
 ```
 
+### Partition Offset (BSD Disklabel)
+
+When an AdvFS domain resides in a partition of a raw disk image
+(not a standalone vdisk), `advfs_volume_read_disklabel()` reads
+the Alpha/BSD disklabel at byte 64 to locate the partition's
+sector offset and size. `advfs_volume_open_at()` applies the byte
+offset transparently to all subsequent I/O and clamps the usable
+volume size to the partition size. The CLI exposes this as
+`--partition <letter>` (auto-detect) or `--offset <bytes>`
+(manual); the two options are mutually exclusive.
+
 ### Read Path
 
 V3 (ODS version 3):
@@ -160,19 +171,19 @@ full pages followed by a frag tail.
                    | fuse_ops |            |
                    +----+-----+            |
                         |                  |
-              +---------+--------+---------+
-              |                  |
-         +----v-----+     +-----v----+
-         | filedata |     |   dir    |
-         +----+-----+     +----+----+
+              +---------+-------+----------+
               |                 |
-         +----v-----+     +----v-----+
-         | fileset  |     |   bmt    |
-         +----+-----+     +----+-----+
+         +----v-----+      +----v-----+
+         | filedata |      |   dir    |
+         +----+-----+      +----+-----+
               |                 |
-         +----v-----+     +----v-----+
-         | extents  |     |  domain  |
-         +----+-----+     +----+-----+
+         +----v-----+      +----v-----+
+         | fileset  |      |   bmt    |
+         +----+-----+      +----+-----+
+              |                 |
+         +----v-----+      +----v-----+
+         | extents  |      |  domain  |
+         +----+-----+      +----+-----+
               |                 |
               +--------+--------+
                        |
