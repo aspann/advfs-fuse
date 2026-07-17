@@ -25,8 +25,10 @@
 #include <errno.h>
 #include <string.h>
 
-/* Maximum directory data pages to scan. */
-#define MAX_DIR_PAGES  4096
+/* Maximum directory data pages to scan.
+ * Large directories (e.g. spool, mail) can span many pages.
+ * 16384 pages = 128 MB max directory size. */
+#define MAX_DIR_PAGES  16384
 
 /* Maximum mcell chain hops when searching for BSR_XTNTS. */
 #define MAX_XTNTS_HOPS  16
@@ -121,7 +123,7 @@ static int find_xtnts_mcell(advfs_domain_t *domain,
 }
 
 /* Maximum BMT pages to scan in the brute-force fallback. */
-#define MAX_BMT_SCAN_PAGES  1024
+#define MAX_BMT_SCAN_PAGES  4096
 
 /* Compute a BMT scan range from one BMT extent map. */
 static uint32_t bmt_scan_pages(const adv_xtnt_t *map, int count)

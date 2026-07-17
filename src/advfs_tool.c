@@ -35,7 +35,7 @@
 #include "util.h"
 #include "volume.h"
 
-#define ADVFS_TOOL_VERSION  "1.0.2"
+#define ADVFS_TOOL_VERSION  "1.0.3"
 
 /* Maximum file name length in a directory entry (mirrors dir.c). */
 #define TOOL_MAX_NAME  255

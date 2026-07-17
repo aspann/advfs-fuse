@@ -112,6 +112,7 @@ ifeq ($(HAVE_FUSE),1)
 install: $(BIN) $(TOOL_BIN)
 	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	install -Dm755 $(TOOL_BIN) $(DESTDIR)$(PREFIX)/bin/$(TOOL_BIN)
+	install -Dm755 resources/mount.fuse.advfs-fuse $(DESTDIR)$(PREFIX)/bin/mount.fuse.advfs-fuse
 else
 install: $(TOOL_BIN)
 	install -Dm755 $(TOOL_BIN) $(DESTDIR)$(PREFIX)/bin/$(TOOL_BIN)

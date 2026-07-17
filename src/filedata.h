@@ -64,8 +64,14 @@ _Static_assert(sizeof(adv_fs_stat_t) == 88, "adv_fs_stat_t size");
 /* Frag slot size in bytes: frag_slot and frag_type are 1 KB units. */
 #define ADVFS_FRAG_SLOT_SZ    1024u
 
-/* Sanity cap on file size to defend against corrupt FS_STAT records. */
-#define ADVFS_FILEDATA_MAX_SIZE  (1ull << 30)  /* 1 GB */
+/* Sanity cap on file size to defend against corrupt FS_STAT records.
+ * AdvFS spec maximum is 16 TiB (44-bit page address * 8 KB pages).
+ * This cap catches obviously corrupt FS_STAT sizes; legitimate files
+ * that exceed available RAM will fail cleanly with ENOMEM at calloc.
+ * NOTE: the current architecture reads whole files into memory
+ * (cache_file_locked in fuse_ops.c). A page-on-demand read path
+ * would remove the practical RAM dependency -- future work. */
+#define ADVFS_FILEDATA_MAX_SIZE  (16ull << 40)  /* 16 TiB (spec max) */
 
 /* ----------------------------------------------------------------
  * Clone / snapshot fallback context.

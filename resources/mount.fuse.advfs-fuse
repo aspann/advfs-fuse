@@ -1,0 +1,29 @@
+#!/bin/sh
+
+DEVICE="$1"
+MOUNTPOINT="$2"
+shift 2
+FILESET=""
+PARTITION=""
+OFFSET=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) shift; OLDIFS="$IFS"; IFS=','
+            for opt in $1; do
+                case "$opt" in
+                    fileset=*)   FILESET="${opt#fileset=}" ;;
+                    partition=*) PARTITION="${opt#partition=}" ;;
+                    offset=*)    OFFSET="${opt#offset=}" ;;
+                esac
+            done; IFS="$OLDIFS" ;;
+    esac
+    shift
+done
+
+CMD="advfs-fuse"
+[ -n "$FILESET" ]   && CMD="$CMD --fileset $FILESET"
+[ -n "$PARTITION" ] && CMD="$CMD --partition $PARTITION"
+[ -n "$OFFSET" ]    && CMD="$CMD --offset $OFFSET"
+
+exec $CMD "$DEVICE" "$MOUNTPOINT"

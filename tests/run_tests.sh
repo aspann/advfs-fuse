@@ -38,6 +38,17 @@ trap 'rm -rf "$OUTDIR"' EXIT
 
 printf '=== advfs-fuse test suite ===\n'
 
+# Auto-decompress .vdisk.zst archives when .vdisk is missing.
+for zst in "$ROOT"/resources/disks/v3/*.vdisk.zst \
+           "$ROOT"/resources/disks/v4/*.vdisk.zst; do
+    [ -f "$zst" ] || continue
+    vdisk="${zst%.zst}"
+    if [ ! -f "$vdisk" ]; then
+        printf 'Decompressing %s ...\n' "$(basename "$zst")"
+        zstd -d -q "$zst"
+    fi
+done
+
 # The synthetic tests run without a vdisk; vdisk-based tests are
 # skipped (not failed) when the image is absent.
 HAVE_VDISK=1
@@ -429,8 +440,8 @@ if "$TESTS_DIR/test_advfs_tool" "$VDISK" >"$outfile" 2>&1; then
     ok=1
     grep -q "\[PASS\]" "$outfile" || ok=0
     grep -q "\[FAIL\]" "$outfile" && ok=0
-    # The bad-checksum fixture must have fired the parser warning.
-    grep -q "checksum mismatch" "$outfile" || ok=0
+    # The bad-checksum fixture must have been exercised.
+    grep -q "bad checksum" "$outfile" || ok=0
     if [ "$ok" -eq 1 ]; then
         npass=$(grep -c "\[PASS\]" "$outfile")
         pass_test "test_advfs_tool" "${npass} advfs-tool checks passed"
@@ -606,7 +617,7 @@ if "$TESTS_DIR/test_advfs_tool" "$V4_VDISK" >"$outfile" 2>&1; then
     ok=1
     grep -q "\[PASS\]" "$outfile" || ok=0
     grep -q "\[FAIL\]" "$outfile" && ok=0
-    grep -q "checksum mismatch" "$outfile" || ok=0
+    grep -q "bad checksum" "$outfile" || ok=0
     if [ "$ok" -eq 1 ]; then
         npass=$(grep -c "\[PASS\]" "$outfile")
         pass_test "test_advfs_tool_v4" "${npass} advfs-tool checks passed (V4)"

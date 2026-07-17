@@ -21,8 +21,8 @@
 #include <string.h>
 
 /* Maximum tag directory pages we will scan.
- * Matches ADVFS_MAX_EXTENTS increase for heavily fragmented volumes. */
-#define MAX_TAG_DIR_PAGES  4096
+ * Each page holds 1022 tags; 16384 pages = ~16.7M tags per fileset. */
+#define MAX_TAG_DIR_PAGES  16384
 
 /* Try to extract fileset info from an mcell's BSR_BFS_ATTR record. */
 static int try_fileset_from_mcell(adv_mcell_t *mc, advfs_fileset_info_t *info)

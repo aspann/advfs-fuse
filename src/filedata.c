@@ -33,8 +33,10 @@
 /* Maximum mcell chain hops when searching for a record. */
 #define MAX_CHAIN_HOPS  16
 
-/* Maximum BMT pages to scan in the brute-force fallback. */
-#define MAX_BMT_SCAN_PAGES  1024
+/* Maximum BMT pages to scan in the brute-force fallback.
+ * Large volumes with many filesets can have BMTs spanning
+ * thousands of pages. */
+#define MAX_BMT_SCAN_PAGES  4096
 
 /* Compute a BMT scan range from one BMT extent map. */
 static uint32_t bmt_scan_pages(const adv_xtnt_t *map, int count)

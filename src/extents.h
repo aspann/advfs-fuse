@@ -17,10 +17,12 @@
 #include "domain.h"
 
 /* Maximum extents we collect from a single mcell chain.
- * Heavily fragmented volumes can exceed 256 extents.
- * 4096 entries = ~48 KB per stack array, well within
- * the default 8 MB Linux thread stack. */
-#define ADVFS_MAX_EXTENTS  4096
+ * Production Tru64 systems (30+ year uptime, no defrag) routinely
+ * exceed 4096 extents -- frag files and large C-ISAM databases on
+ * production volumes reached 5000+ extents per file.
+ * 32768 entries = ~384 KB per stack array; worst-case ~1.5 MB total
+ * per FUSE read call, well within the default 8 MB thread stack. */
+#define ADVFS_MAX_EXTENTS  32768
 
 /* One resolved extent descriptor: bitfile page -> disk block.
  * vd_index selects the domain volume holding the blocks (1-based);

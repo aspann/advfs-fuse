@@ -17,8 +17,12 @@
 /* Maximum number of fileset records we can return in one enumeration. */
 #define ADVFS_MAX_FILESETS  64
 
-/* Maximum BMT extent descriptors cached in the domain context. */
-#define ADVFS_MAX_BMT_EXTENTS  256
+/* Maximum BMT extent descriptors cached in the domain context.
+ * The BMT metadata file itself can be heavily fragmented on
+ * long-running production systems. 256 was insufficient for a
+ * 600 GB production volume. If this limit is hit, BMT page
+ * resolution fails and ALL file reads break silently. */
+#define ADVFS_MAX_BMT_EXTENTS  4096
 
 /* Maximum volumes (virtual disks) attachable to one domain context. */
 #define ADVFS_MAX_DOM_VDS  8
